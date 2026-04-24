@@ -3,7 +3,7 @@ struct Vector2D {
 };
 
 class Ant {
-public:
+ public:
     Vector2D position;
     float heading;
 
@@ -13,7 +13,7 @@ public:
 }
 
 class World {
-public: 
+ public: 
     std::vector<Ant> ants;
 
     void step(float dt) {
