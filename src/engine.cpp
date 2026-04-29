@@ -4,12 +4,20 @@
 #include <cmath>
 #include <vector>
 #include <random>
+#include <fstream>
+#include <sstream>
+#include <filesystem>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-const unsigned int SCR_WIDTH = 800;
+// Dear ImGui for the User Interface
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+
+const unsigned int SCR_WIDTH = 1000; // Made window wider to fit UI
 const unsigned int SCR_HEIGHT = 600;
 
 float tanh_activation(float x) { return std::tanh(x); }
@@ -17,7 +25,6 @@ float tanh_activation(float x) { return std::tanh(x); }
 // --- 1. THE BRAIN ---
 class NeuralNetwork {
 public:
-    // We now have 3 inputs: Sensor Left, Sensor Right, and PAIN
     int num_inputs = 3; 
     int num_hidden = 5;
     int num_outputs = 2;
@@ -79,11 +86,49 @@ public:
         }
         return outputs;
     }
+
+    // --- FILE I/O FOR SAVING BRAINS ---
+    void save_to_file(const std::string& filename) {
+        std::ofstream file(filename);
+        if (!file.is_open()) return;
+
+        for (int i = 0; i < num_inputs; ++i)
+            for (int j = 0; j < num_hidden; ++j) file << weights_ih[i][j] << " ";
+        file << "\n";
+
+        for (int i = 0; i < num_hidden; ++i)
+            for (int j = 0; j < num_outputs; ++j) file << weights_ho[i][j] << " ";
+        file << "\n";
+
+        for (int i = 0; i < num_hidden; ++i) file << bias_h[i] << " ";
+        file << "\n";
+
+        for (int i = 0; i < num_outputs; ++i) file << bias_o[i] << " ";
+        file << "\n";
+        
+        file.close();
+    }
+
+    void load_from_file(const std::string& filename) {
+        std::ifstream file(filename);
+        if (!file.is_open()) return;
+
+        for (int i = 0; i < num_inputs; ++i)
+            for (int j = 0; j < num_hidden; ++j) file >> weights_ih[i][j];
+        
+        for (int i = 0; i < num_hidden; ++i)
+            for (int j = 0; j < num_outputs; ++j) file >> weights_ho[i][j];
+        
+        for (int i = 0; i < num_hidden; ++i) file >> bias_h[i];
+        for (int i = 0; i < num_outputs; ++i) file >> bias_o[i];
+        
+        file.close();
+    }
 };
 
 struct Food {
     glm::vec2 position;
-    float radius = 0.05f; // How close the ant needs to be to "eat" it
+    float radius = 0.05f;
 };
 
 // --- 2. THE HOMEOSTATIC ANT ---
@@ -101,8 +146,11 @@ public:
 
     // --- HOMEOSTASIS VARIABLES ---
     float pain = 0.0f;
-    float pain_threshold = 100.0f; // If pain hits this, the ant dies
-    float pain_increase_rate = 1.0f; 
+    float pain_threshold = 100.0f;
+    float pain_increase_rate = 15.0f;
+
+    // --- HOT/COLD LEARNING VARIABLES ---
+    float previous_distance_to_food = 999.0f;
 
     NeuralNetwork brain;
     NeuralNetwork best_surviving_brain; 
@@ -118,13 +166,11 @@ public:
         motor_forward = 0.0f;
         motor_turn = 0.0f;
         pain = 0.0f;
+        previous_distance_to_food = 999.0f;
     }
 
-    void update(float dt, const Food& food) {
-        // 1. INCREASE PAIN (The drive to survive)
-        pain += pain_increase_rate * dt;
-
-        // 2. SENSORS
+    void update(float dt, const Food& food, std::mt19937& gen) {
+        // 1. SENSORS
         glm::vec2 left_antenna_pos = position + glm::vec2(
             std::cos(heading + antenna_angle) * antenna_length,
             std::sin(heading + antenna_angle) * antenna_length
@@ -136,12 +182,36 @@ public:
 
         float dist_left = glm::distance(left_antenna_pos, food.position);
         float dist_right = glm::distance(right_antenna_pos, food.position);
+        float current_distance = glm::distance(position, food.position);
         
         sensor_left = 1.0f / (1.0f + (dist_left * 5.0f));
         sensor_right = 1.0f / (1.0f + (dist_right * 5.0f));
 
+        // 2. THE "HOT/COLD" CONTINUOUS LEARNING MECHANISM
+        if (previous_distance_to_food != 999.0f) {
+            float delta_dist = current_distance - previous_distance_to_food;
+            
+            if (delta_dist > 0.0f) {
+                // COLDER: We are moving away from the food.
+                // Pain increases faster, and we slightly mutate the brain right now
+                // to try and break out of this bad behavior.
+                pain += (pain_increase_rate * 1.5f) * dt;
+                brain.mutate(0.05f, gen); // 5% chance to tweak a weight
+            } else {
+                // HOTTER: We are moving closer to the food!
+                // Pain decreases (relief), and we lock in these weights as "good".
+                pain -= (pain_increase_rate * 2.0f) * dt;
+                pain = std::max(0.0f, pain); // Pain can't go below 0
+                best_surviving_brain = brain; 
+            }
+        } else {
+            // Just normal pain increase if we don't have a previous distance yet
+            pain += pain_increase_rate * dt;
+        }
+        
+        previous_distance_to_food = current_distance;
+
         // 3. THE BRAIN THINKS
-        // We feed the brain its sensors AND its current pain level (normalized 0 to 1)
         std::vector<float> inputs = {sensor_left, sensor_right, pain / pain_threshold};
         std::vector<float> outputs = brain.think(inputs);
 
@@ -154,7 +224,6 @@ public:
         position.x += std::cos(heading) * current_speed * dt;
         position.y += std::sin(heading) * current_speed * dt;
         
-        // Keep ant inside the screen bounds so it doesn't get lost forever
         position.x = glm::clamp(position.x, -0.9f, 0.9f);
         position.y = glm::clamp(position.y, -0.9f, 0.9f);
     }
@@ -183,6 +252,14 @@ int main() {
     GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "The Homeostatic Ant", NULL, NULL);
     glfwMakeContextCurrent(window);
     gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
+
+    // --- SETUP IMGUI ---
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init("#version 330 core");
 
     unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
@@ -216,7 +293,7 @@ int main() {
 
     Ant myAnt;
     myAnt.brain.randomize(gen);
-    myAnt.best_surviving_brain = myAnt.brain; // Start with the random brain
+    myAnt.best_surviving_brain = myAnt.brain;
     myAnt.reset_physics();
 
     Food myFood;
@@ -225,8 +302,6 @@ int main() {
     float deltaTime = 0.0f;
     float lastFrame = glfwGetTime();
 
-    std::cout << "Ant born. Pain threshold: " << myAnt.pain_threshold << "\n";
-
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = glfwGetTime();
         deltaTime = currentFrame - lastFrame;
@@ -234,31 +309,27 @@ int main() {
 
         if(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwSetWindowShouldClose(window, true);
 
-        myAnt.update(deltaTime, myFood);
+        myAnt.update(deltaTime, myFood, gen);
 
         // --- THE SURVIVAL LOGIC ---
-        
         if (glm::distance(myAnt.position, myFood.position) < myFood.radius) {
-            myAnt.pain = 0.0f; 
+            myAnt.pain = 0.0f;
             myAnt.meals_eaten++;
-            
             myAnt.best_surviving_brain = myAnt.brain; 
-            
-            std::cout << "Ant ATE! Meals total: " << myAnt.meals_eaten << ". Brain saved.\n";
-
             myFood.position = glm::vec2(pos_dist(gen), pos_dist(gen));
+            myAnt.previous_distance_to_food = 999.0f; // Reset tracking for new food
         }
 
         if (myAnt.pain >= myAnt.pain_threshold) {
+            // SAVE THE BRAIN TO DISK BEFORE DYING
+            std::string filename = "brains/brain_life_" + std::to_string(myAnt.lifetimes) + ".txt";
+            myAnt.best_surviving_brain.save_to_file(filename);
+
             myAnt.lifetimes++;
-            std::cout << "Ant DIED of starvation. Lifetime: " << myAnt.lifetimes << ". Mutating from last good brain...\n";
-            
             myAnt.brain = myAnt.best_surviving_brain;
-            
             myAnt.brain.mutate(0.3f, gen); 
-            
             myAnt.reset_physics();
-            myFood.position = glm::vec2(pos_dist(gen), pos_dist(gen)); 
+            myFood.position = glm::vec2(pos_dist(gen), pos_dist(gen));
         }
 
         // --- RENDERING ---
@@ -269,7 +340,7 @@ int main() {
         unsigned int transformLoc = glGetUniformLocation(shaderProgram, "transform");
         unsigned int colorLoc = glGetUniformLocation(shaderProgram, "color");
 
-        // Draw Food (Green)
+        // Draw Food
         glm::mat4 foodTrans = glm::mat4(1.0f);
         foodTrans = glm::translate(foodTrans, glm::vec3(myFood.position.x, myFood.position.y, 0.0f));
         glUniformMatrix4fv(transformLoc, 1, GL_FALSE, glm::value_ptr(foodTrans));
@@ -283,16 +354,52 @@ int main() {
         antTrans = glm::rotate(antTrans, myAnt.heading, glm::vec3(0.0f, 0.0f, 1.0f));
         glUniformMatrix4fv(transformLoc, 1, GL_FALSE, glm::value_ptr(antTrans));
         
-        // VISUAL FEEDBACK: The ant turns RED as it experiences more pain
         float pain_ratio = myAnt.pain / myAnt.pain_threshold;
         glUniform4f(colorLoc, 1.0f, 1.0f - pain_ratio, 1.0f - pain_ratio, 1.0f); 
         
         glBindVertexArray(antVAO);
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
+        // --- IMGUI UI RENDERING ---
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        ImGui::Begin("Ant Control Panel");
+        ImGui::Text("Lifetimes: %d", myAnt.lifetimes);
+        ImGui::Text("Meals Eaten: %d", myAnt.meals_eaten);
+        ImGui::ProgressBar(pain_ratio, ImVec2(0.0f, 0.0f), "Pain Level");
+
+        ImGui::Separator();
+        ImGui::Text("Saved Brains (Click to Load):");
+        
+        // Scan the "brains" folder and create a button for each file
+        for (const auto& entry : std::filesystem::directory_iterator("brains")) {
+            std::string path = entry.path().string();
+            std::string filename = entry.path().filename().string();
+            
+            if (ImGui::Button(filename.c_str())) {
+                myAnt.brain.load_from_file(path);
+                myAnt.best_surviving_brain = myAnt.brain;
+                myAnt.reset_physics();
+                myAnt.lifetimes = 1; // Reset stats for the loaded brain
+                myAnt.meals_eaten = 0;
+            }
+        }
+
+        ImGui::End();
+
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
+
+    // Cleanup ImGui
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
 
     glfwTerminate();
     return 0;
