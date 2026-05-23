@@ -1,3 +1,0 @@
-1. Can the ant sense itself? 
-    Yes, but only if we model self-sensing channels: hunger/interoception, leg joint angles/proprioception, 
-    foot contact, motor effort, body velocity, collision pressure, antenna contact, etc. 
