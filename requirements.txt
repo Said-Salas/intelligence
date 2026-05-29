@@ -1,13 +1,9 @@
-# Install JAX for your machine first, then this file.
-# Apple Silicon / CPU-only Mac:
-#   pip install -U "jax[cpu]"
-# Linux with NVIDIA GPU: see https://github.com/google/jax#pip-installation-gpu-cuda
-#
-# DreamerV3 upstream pins CUDA JAX in its own requirements.txt; this file is a
-# lighter set for local dev. Full training deps: pip install -e ./dreamerv3
+# Mac / CPU quickstart (no NVIDIA packages from upstream requirements.txt).
+# Create env: uv venv .venv --python 3.12 && source .venv/bin/activate
+# Install:    uv pip install -r requirements.txt
 
--e ./dreamerv3
-
+numpy<2
+jax[cpu]>=0.4.33
 chex
 colored_traceback
 einops
@@ -15,11 +11,10 @@ elements>=3.19.1
 granular>=0.20.3
 jaxtyping
 ninjax>=3.5.1
-numpy<2
 optax
 portal>=3.5.0
+ruamel.yaml
 scope>=0.4.4
 tqdm
 
-# Optional: first env to verify Dreamer runs (small, no GPU)
 crafter
